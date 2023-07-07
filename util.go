@@ -1,25 +1,26 @@
 package main
 
 import (
+	"bufio"
 	"bytes"
 	"encoding/json"
 	"fmt"
 	"io"
-	"io/ioutil"
 	"math/rand"
 	"os"
 	"path"
 	"strings"
+	"sync"
 )
 
-// Gop
+// 代码来自: goproxy
 func readJsonConfig(filename string, config interface{}) error {
 	fileext := path.Ext(filename)
 	filename1 := strings.TrimSuffix(filename, fileext) + ".user" + fileext
 
 	cm := make(map[string]interface{})
 	for i, name := range []string{filename, filename1} {
-		f, err := os.Open(name)
+		data, err := os.ReadFile(name)
 		if err != nil {
 			if i == 0 {
 				return err
@@ -27,14 +28,11 @@ func readJsonConfig(filename string, config interface{}) error {
 				continue
 			}
 		}
-		defer f.Close()
-
-		data, err := readJson(f)
+		data = bytes.TrimPrefix(data, []byte("\xef\xbb\xbf"))
+		data, err = readJson(bytes.NewReader(data))
 		if err != nil {
 			return err
 		}
-
-		data = bytes.TrimPrefix(data, []byte("\xef\xbb\xbf"))
 
 		cm1 := make(map[string]interface{})
 
@@ -62,37 +60,23 @@ func readJsonConfig(filename string, config interface{}) error {
 }
 
 func readJson(r io.Reader) ([]byte, error) {
-	s, err := ioutil.ReadAll(r)
-	if err != nil {
-		return s, err
-	}
-
-	lines := make([]string, 0)
-	for _, line := range strings.Split(strings.Replace(string(s), "\r\n", "\n", -1), "\n") {
-		line = strings.TrimSpace(line)
+	scanner := bufio.NewScanner(r)
+	var b bytes.Buffer
+	prev := ""
+	for scanner.Scan() {
+		line := strings.TrimSpace(scanner.Text())
 		if line == "" || strings.HasPrefix(line, "//") {
 			continue
 		}
-		lines = append(lines, line)
-	}
-
-	var b bytes.Buffer
-	for i, line := range lines {
-		if i < len(lines)-1 {
-			nextLine := strings.TrimSpace(lines[i+1])
-			if nextLine == "]" ||
-				nextLine == "]," ||
-				nextLine == "}" ||
-				nextLine == "}," {
-				if strings.HasSuffix(line, ",") {
-					line = strings.TrimSuffix(line, ",")
-				}
-			}
+		if strings.HasPrefix(line, "}") || strings.HasPrefix(line, "]") {
+			prev = strings.TrimSuffix(prev, ",")
 		}
-		b.WriteString(line)
-	}
 
-	return b.Bytes(), nil
+		b.WriteString(prev)
+		prev = line
+	}
+	b.WriteString(prev)
+	return b.Bytes(), scanner.Err()
 }
 
 func mergeMap(m1 map[string]interface{}, m2 map[string]interface{}) error {
@@ -119,6 +103,11 @@ func randInt(l, u int) int {
 	return rand.Intn(u-l) + l
 }
 
+func randomChoice[T any](a []T) T {
+	return a[rand.Intn(len(a))]
+}
+
+// 生成两段或三段的随机字符串当作 host
 // llm.xadl
 // unupk.bfrf.pvi
 func randomHost() string {
@@ -132,4 +121,38 @@ func randomHost() string {
 		a[i] = b
 	}
 	return string(bytes.Join(a, []byte{46}))
+}
+
+func or[T comparable](vals ...T) T {
+	var zero T
+	for _, val := range vals {
+		if val != zero {
+			return val
+		}
+	}
+	return zero
+}
+
+// pathExist 返回文件或文件夹是否存在
+func pathExist(name string) bool {
+	_, err := os.Stat(name)
+	return !os.IsNotExist(err)
+}
+
+func ops(count, threads int, op func(i, thread int)) {
+	var wg sync.WaitGroup
+	wg.Add(threads)
+	for i := 0; i < threads; i++ {
+		s, e := count/threads*i, count/threads*(i+1)
+		if i == threads-1 {
+			e = count
+		}
+		go func(i, s, e int) {
+			for j := s; j < e; j++ {
+				op(j, i)
+			}
+			wg.Done()
+		}(i, s, e)
+	}
+	wg.Wait()
 }
